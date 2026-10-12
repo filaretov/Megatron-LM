@@ -555,7 +555,9 @@ class TransformerConfig(ModelParallelConfig):
     """If True, uses fused weighted squared relu kernel when using MoE."""
 
     fused_single_qkv_rope: bool = False
-    """If set, avoid splitting QKV before ROPE forward and avoid concatenating ROPE dgrads."""
+    """If set, avoid splitting QKV before ROPE forward and avoid concatenating ROPE dgrads.
+    With qk_layernorm and Transformer Engine RMSNorm Q/K norms, the norms run inside the same
+    fused kernel when the installed Transformer Engine supports it."""
 
     fused_residual_rmsnorm: bool = False
     """If True, fuses residual connection and RMSNorm backward pass when TE is used."""

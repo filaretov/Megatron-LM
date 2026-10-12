@@ -150,6 +150,21 @@ KERNELS: Tuple[KernelEntry, ...] = (
         "L2Norm._norm (row reduction) and Attention._apply_output_gate.",
     ),
     KernelEntry(
+        name="attention_kernels_and_dispatch",
+        sources=("megatron/core/transformer/attention.py",),
+        tests=(
+            K + "test_fused_activations.py",
+            K + "test_runtime_cp_attention.py",
+            K + "test_fused_qkv_norm_rope.py",
+        ),
+        kind="dispatch",
+        notes="Attention._apply_output_gate is replayed in test_fused_activations.py. "
+        "Packed SelfAttention dispatch through RoPE and TE attention is replayed with runtime "
+        "CP1/CP2/CP4, including input/parameter gradients and CP-state restoration, in "
+        "test_runtime_cp_attention.py. The QK norm fused into TE's single-QKV RoPE kernel "
+        "(norm weight gradients included) is replayed in test_fused_qkv_norm_rope.py.",
+    ),
+    KernelEntry(
         name="fused_vocab_parallel_cross_entropy",
         sources=("megatron/core/fusions/fused_cross_entropy.py",),
         tests=(K + "test_fused_activations.py",),
