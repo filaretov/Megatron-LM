@@ -396,22 +396,37 @@ class DistributedDataParallel(_BaseDataParallel):
                         bucket_groups[num_bucket_groups - i - 1]
                     )
 
-        # Set `previous_grad_reduce_bucket_group` so each bucket group can drain its predecessor's
-        # reduce-scatter at dispatch time. Only needed for reduce_scatter_with_fp32_accumulation,
-        # which holds an intermediate all-to-all output tensor pinned until .wait() runs; without
-        # this draining, all such tensors stay live until end-of-step. The fp32-accum path asserts
-        # num_distributed_optimizer_instances == 1 elsewhere, so we only link in that case.
+        # Set `previous_grad_reduce_bucket_group` so each bucket group drains an earlier bucket
+        # group's reduce-scatter at dispatch time (a compute-stream wait on that collective).
+        # Two users:
+        #  - reduce_scatter_with_fp32_accumulation holds an intermediate all-to-all output tensor
+        #    pinned until .wait() runs; without draining, all such tensors stay live until
+        #    end-of-step. This needs a drain distance of 1.
+        #  - max_in_flight_grad_reduces bounds how far the backward can run ahead of the
+        #    communication chain: bucket group i waits for bucket group i - N before dispatching,
+        #    so at most N collectives are in flight. Back-to-back collectives launched while
+        #    compute keeps producing gradients have been observed to run ~2x slower and to slow
+        #    concurrent compute kernels (NCCL symmetric reduce-scatter, large DP); bounding the
+        #    chain depth keeps every collective launched with slack.
+        # Both paths require num_distributed_optimizer_instances == 1 (asserted in the config).
         # Grad-reduce dispatches happen in forward order of bucket_groups during backward (buckets
-        # closer to the output finish their gradients first), so bucket_groups[i]'s immediate
-        # predecessor in dispatch order is bucket_groups[i-1].
+        # closer to the output finish their gradients first), so bucket_groups[i]'s predecessor
+        # at distance N in dispatch order is bucket_groups[i-N].
+        drain_distance = None
         if (
             self.ddp_config.overlap_grad_reduce
-            and self.ddp_config.reduce_scatter_with_fp32_accumulation
             and self.ddp_config.num_distributed_optimizer_instances == 1
         ):
+            if self.ddp_config.reduce_scatter_with_fp32_accumulation:
+                drain_distance = 1
+            elif self.ddp_config.max_in_flight_grad_reduces is not None:
+                drain_distance = self.ddp_config.max_in_flight_grad_reduces
+        if drain_distance is not None:
             for bucket_groups in [self.bucket_groups, self.expert_parallel_bucket_groups]:
-                for i in range(1, len(bucket_groups)):
-                    bucket_groups[i].previous_grad_reduce_bucket_group = bucket_groups[i - 1]
+                for i in range(drain_distance, len(bucket_groups)):
+                    bucket_groups[i].previous_grad_reduce_bucket_group = bucket_groups[
+                        i - drain_distance
+                    ]
 
         # Create map from param to bucket group, used in pre_hook.
         for bucket_groups in [self.bucket_groups, self.expert_parallel_bucket_groups]:

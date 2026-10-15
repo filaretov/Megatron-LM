@@ -22,6 +22,18 @@ class DistributedDataParallelConfig:
     overlap_grad_reduce: bool = False
     """If true, overlap grad all-reduce / reduce-scatter with backward compute."""
 
+    max_in_flight_grad_reduces: Optional[int] = None
+    """Maximum number of overlapped grad reduce-scatter / all-reduce collectives that may be
+       in flight at once. When set, bucket group i drains the collective of bucket group
+       i - max_in_flight_grad_reduces (a compute-stream wait) before dispatching its own, which
+       keeps the backward from running arbitrarily far ahead of the communication chain.
+       Launching consecutive collectives back-to-back while compute keeps producing gradients
+       has been observed to slow both the collectives and concurrent compute (NCCL symmetric
+       LDMC reduce-scatter on GB300/VR200 at DP=64); a limit of 1 avoids it at the cost of a
+       short compute stall whenever compute gets a full bucket ahead. None (default) disables
+       the limit. Requires overlap_grad_reduce=True and num_distributed_optimizer_instances=1.
+       reduce_scatter_with_fp32_accumulation always implies a limit of 1."""
+
     overlap_param_gather: bool = False
     """If true, overlap param all-gather with forward compute."""
 
@@ -304,6 +316,14 @@ class DistributedDataParallelConfig:
         return self.overlap_param_gather or self.reuse_grad_buf_for_mxfp8_param_ag
 
     def __post_init__(self):
+        if self.max_in_flight_grad_reduces is not None:
+            assert self.max_in_flight_grad_reduces >= 1, "max_in_flight_grad_reduces must be >= 1"
+            assert (
+                self.overlap_grad_reduce
+            ), "max_in_flight_grad_reduces requires overlap_grad_reduce=True"
+            assert (
+                self.num_distributed_optimizer_instances == 1
+            ), "max_in_flight_grad_reduces requires num_distributed_optimizer_instances == 1"
         import os
 
         """Check the validity of the config."""
